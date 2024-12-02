@@ -1,22 +1,21 @@
-from flask import Flask, request, jsonify, render_template
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-import numpy as np
+from flask import Flask, request, render_template, jsonify
 import os
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+import numpy as np
 
 app = Flask(__name__)
 
-# Load the model with error handling
-MODEL_PATH = 'plant_disease_model.h5'
-
+# Load the model
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'plant_disease_model.h5')
 try:
     model = load_model(MODEL_PATH)
-    print("Model loaded successfully.")
+    print("Model loaded successfully!")
 except Exception as e:
     print(f"Error loading model: {e}")
     model = None
 
-# Define class labels
+# Class labels (update these with your actual labels)
 CLASS_LABELS = [
     "Apple___Apple_scab", "Apple___Black_rot", "Apple___Cedar_apple_rust", "Apple___healthy",
     "Blueberry___healthy", "Cherry_(including_sour)___Powdery_mildew", "Cherry_(including_sour)___healthy",
@@ -33,13 +32,15 @@ CLASS_LABELS = [
 ]
 
 @app.route('/')
-def index():
-    """Homepage with an upload form."""
-    return render_template('index.html')  # Create an index.html template
+def home():
+    return render_template('index.html')
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Handle image upload and predict the disease."""
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 500
+
+    # Check if the file is part of the request
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -48,30 +49,20 @@ def predict():
         return jsonify({"error": "No file selected"}), 400
 
     try:
-        # Save the file
-        filepath = os.path.join('uploads', file.filename)
-        os.makedirs('uploads', exist_ok=True)
-        file.save(filepath)
+        # Process the uploaded image
+        img = load_img(file, target_size=(128, 128))  # Resize image
+        img_array = img_to_array(img) / 255.0  # Normalize pixel values
+        img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
 
-        # Preprocess the image
-        img = image.load_img(filepath, target_size=(128, 128))
-        img_array = image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0
+        # Predict using the model
+        predictions = model.predict(img_array)
+        predicted_class = np.argmax(predictions, axis=1)[0]
+        predicted_label = CLASS_LABELS[predicted_class]
 
-        # Predict the class
-        if model:
-            prediction = model.predict(img_array)
-            predicted_class = np.argmax(prediction, axis=1)[0]
-            predicted_label = CLASS_LABELS[predicted_class]
-
-            return jsonify({"prediction": predicted_label}), 200
-        else:
-            return jsonify({"error": "Model not loaded"}), 500
-
+        return jsonify({"prediction": predicted_label})
     except Exception as e:
-        print(f"Error processing image: {e}")
-        return jsonify({"error": "An error occurred during prediction"}), 500
+        return jsonify({"error": f"Error processing image: {e}"}), 500
 
 if __name__ == '__main__':
-    # Run the app locally
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
