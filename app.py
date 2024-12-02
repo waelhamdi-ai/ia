@@ -1,64 +1,73 @@
-import os
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, jsonify
 from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.preprocessing import image
 import numpy as np
-from io import BytesIO
+import os
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# Load the model
+# Load the model when the app starts
 try:
     model = load_model('plant_disease_model.h5')
-    class_labels = [
-        "Apple___Apple_scab", "Apple___Black_rot", "Apple___Cedar_apple_rust", "Apple___healthy",
-        "Blueberry___healthy", "Cherry_(including_sour)___Powdery_mildew", "Cherry_(including_sour)___healthy",
-        "Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot", "Corn_(maize)___Common_rust_",
-        "Corn_(maize)___Northern_Leaf_Blight", "Corn_(maize)___healthy", "Grape___Black_rot",
-        "Grape___Esca_(Black_Measles)", "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)", "Grape___healthy",
-        "Orange___Haunglongbing_(Citrus_greening)", "Peach___Bacterial_spot", "Peach___healthy",
-        "Pepper,_bell___Bacterial_spot", "Pepper,_bell___healthy", "Potato___Early_blight", "Potato___Late_blight",
-        "Potato___healthy", "Raspberry___healthy", "Soybean___healthy", "Squash___Powdery_mildew",
-        "Strawberry___Leaf_scorch", "Strawberry___healthy", "Tomato___Bacterial_spot", "Tomato___Early_blight",
-        "Tomato___Late_blight", "Tomato___Leaf_Mold", "Tomato___Septoria_leaf_spot",
-        "Tomato___Spider_mites Two-spotted_spider_mite", "Tomato___Target_Spot",
-        "Tomato___Tomato_Yellow_Leaf_Curl_Virus", "Tomato___Tomato_mosaic_virus", "Tomato___healthy"
-    ]
+    print("Model loaded successfully.")
 except Exception as e:
-    model = None
-    class_labels = []
     print(f"Error loading model: {e}")
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+# Set up the upload folder
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+# Define the allowed extensions for image files
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+# Function to check if the uploaded file is an image
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Home route
+@app.route('/')
+def home():
+    return "Welcome to the Plant Disease Prediction API!"
+
+# Prediction route
 @app.route('/predict', methods=['POST'])
 def predict():
-    try:
-        if 'image' not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(file_path)
 
-        file = request.files['image']
-        if file.filename == '':
-            return jsonify({"error": "No file selected"}), 400
+        try:
+            # Preprocess the image
+            img = image.load_img(file_path, target_size=(128, 128))
+            img_array = image.img_to_array(img)
+            img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+            img_array = img_array / 255.0  # Normalize pixel values
 
-        # Process the image
-        img_bytes = BytesIO(file.read())
-        img = load_img(img_bytes, target_size=(128, 128))
-        img_array = img_to_array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
+            # Predict the class
+            prediction = model.predict(img_array)
+            predicted_class = np.argmax(prediction, axis=1)[0]
 
-        # Make prediction
-        prediction = model.predict(img_array)
-        predicted_class = np.argmax(prediction, axis=1)[0]
-        predicted_label = class_labels[predicted_class]
+            # Get class labels
+            class_labels = list(model.class_indices.keys())
+            predicted_label = class_labels[predicted_class]
 
-        return jsonify({"prediction": predicted_label})
-    except Exception as e:
-        return jsonify({"error": f"Error processing image: {str(e)}"}), 500
+            return jsonify({"predicted_class": predicted_label})
+
+        except Exception as e:
+            return jsonify({"error": f"Error processing image: {str(e)}"}), 500
+    else:
+        return jsonify({"error": "Invalid file format. Please upload an image."}), 400
+
 
 if __name__ == '__main__':
-    # Use PORT environment variable for deployment
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=5000)
